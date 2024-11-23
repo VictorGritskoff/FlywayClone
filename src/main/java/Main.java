@@ -1,10 +1,11 @@
+import lombok.extern.slf4j.Slf4j;
+
 import static migration_utils.MigrationTool.run;
 
 /**
  * Главный класс приложения, содержащий точку входа.
  * Запускает выполнение миграций или других команд, переданных в качестве аргументов.
  */
-
 public class Main {
     /**
      * Точка входа в программу.

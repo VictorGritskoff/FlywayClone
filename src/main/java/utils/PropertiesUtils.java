@@ -23,7 +23,15 @@ public class PropertiesUtils {
     }
 
     public static String getProperty(String key) {
-        return properties.getProperty(key);
+        String value = properties.getProperty(key);
+        if (value == null) {
+            throw new IllegalArgumentException("Свойство с ключом '" + key + "' не найден!");
+        }
+        return value;
+    }
+
+    public static String getProperty(String key, String defaultValue) {
+        return properties.getProperty(key, defaultValue);
     }
 
 }

@@ -36,6 +36,7 @@ public class MigrationManager {
      * Миграции выполняются в порядке возрастания версии.
      */
     public static void migrate() {
+        acquireLock();
         try(Connection connection = ConnectionManager.getConnection()) {
             connection.setAutoCommit(false);
 
@@ -50,6 +51,8 @@ public class MigrationManager {
             connection.commit();
         } catch (Exception e) {
             log.error("Ошибка во время миграции.", e);
+        } finally {
+            releaseLock();
         }
     }
 
@@ -281,6 +284,29 @@ public class MigrationManager {
             ResultSet rs = statement.executeQuery();
             rs.next();
             return rs.getInt(1) > 0;
+        }
+    }
+
+    private static void acquireLock() {
+        String sql = "SELECT pg_advisory_lock(19)";
+
+        try (Connection connection = ConnectionManager.getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.execute();
+        } catch (SQLException e) {
+            log.error("Ошибка во время захвата блокировки.", e);
+            throw new RuntimeException("Error acquiring migration lock", e);
+        }
+    }
+
+    private static void releaseLock() {
+        String sql = "SELECT pg_advisory_unlock(19)";
+        try (Connection connection = ConnectionManager.getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.execute();
+        } catch (SQLException e) {
+            log.error("Ошибка во время освобождения блокировки.", e);
+            throw new RuntimeException("Error releasing migration lock", e);
         }
     }
 
