@@ -11,7 +11,6 @@ public class ConnectionManager {
     private static Connection connection;
 
     private ConnectionManager() {
-
     }
 
     public static Connection getConnection() throws SQLException {
