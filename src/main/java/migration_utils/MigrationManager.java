@@ -1,64 +1,105 @@
 package migration_utils;
 
 import database.ConnectionManager;
+import lombok.extern.slf4j.Slf4j;
 
 import java.io.File;
 import java.sql.*;
-import java.time.LocalDateTime;
-import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Класс, отвечающий за управление миграциями базы данных.
+ * Реализует методы для выполнения миграций, откатов и получения информации о текущем статусе миграций.
+ * <ul>
+ *     <li>Выполнение всех миграций, которые еще не были применены.</li>
+ *     <li>Получение информации о последней примененной миграции.</li>
+ *     <li>Откат последних миграций.</li>
+ *     <li>Откат до определенной версии (тега).</li>
+ *     <li>Получение информации о текущем статусе базы данных и примененных миграциях.</li>
+ * </ul>
+ */
+@Slf4j
 public class MigrationManager {
 
-    //TODO убрать из MigrationManager метод execute и перенети нужны методы сюда
-    //TODO добавить изменение состояний при ролбеках
-    //TODO изменить System.out на логгирование
+    /**
+     * Путь к директории, содержащей миграционные файлы.
+     */
+    private static final String PATH_TO_MIGRATION_FOLDER = "migrations";
 
-    private static final String PATH_TO_MIGRATION_FOLDER = "src/main/resources/migrations";
-
-
-    private MigrationManager() {
-    }
-
+    /**
+     * Выполняет миграции, которые еще не были применены.
+     * Проверяет наличие каждой миграции в базе данных и применяет те, которые еще не были выполнены.
+     * Миграции выполняются в порядке возрастания версии.
+     */
     public static void migrate() {
-        try {
-            ensureMigrationTableExists();
+        try (Connection connection = ConnectionManager.getConnection()) {
+            connection.setAutoCommit(false);
 
-            double currentVersion = getCurrentVersion();
+            ensureMigrationTableExists();
 
             List<File> migrationFiles = MigrationFileReader.findMigrationFiles(PATH_TO_MIGRATION_FOLDER);
-
-            for (File migrationFile : migrationFiles) {
-                double migrationVersion = MigrationFileReader.getVersionFromFile(migrationFile);
-
-                if (migrationVersion <= currentVersion) {
-                    System.out.println("Миграция уже выполнена: " + migrationFile.getName());
-                    continue;
-                }
-
-
-                String sql = MigrationFileReader.readSqlFromFile(migrationFile);
-                recordMigration(migrationFile.getName(), MigrationStatus.IN_PROGRESS);
-                try {
-
-                    MigrationExecutor.execute(sql);
-
-                    updateMigrationStatus(migrationFile.getName(), MigrationStatus.SUCCESS);
-                    System.out.println("Миграция выполнена: " + migrationFile.getName());
-                } catch (SQLException e) {
-                    updateMigrationStatus(migrationFile.getName(), MigrationStatus.FAILED);
-                    System.out.println("Ошибка при выполнении миграции: " + migrationFile.getName());
-                    e.printStackTrace();
-                    throw e;
+            for (File file : migrationFiles) {
+                if (!isMigrationAlreadyApplied(file, connection)) {
+                    executeMigration(connection, file);
                 }
             }
-        } catch (SQLException e) {
-            System.out.println("Ошибка при выполнении миграций: " + e.getMessage());
-            e.printStackTrace();
+
+            connection.commit();
+        } catch (Exception e) {
+            log.error("Ошибка во время миграции.", e);
         }
     }
 
-    public static void rollbackToTag(String tag){
+    /**
+     * Выводит информацию о последней примененной миграции.
+     * Запрашивает из базы данных последнюю миграцию, которая была применена, и выводит её данные.
+     */
+    public static void getLastAppliedMigration() {
+        String query = "SELECT * FROM migration_history WHERE reverted = FALSE ORDER BY applied_at DESC LIMIT 1";
+        executeQueryAndLogResults(query, "Последняя примененная миграция");
+    }
+
+    /**
+     * Откатывает заданное количество последних миграций.
+     * Миграции откатываются в порядке убывания их версий.
+     *
+     * @param numberOfMigrations Количество миграций, которые нужно откатить.
+     */
+    public static void rollback(int numberOfMigrations) {
+        try (Connection connection = ConnectionManager.getConnection()) {
+            connection.setAutoCommit(false);
+
+            List<String> versionsToRollback = getVersionsToRollback(connection, numberOfMigrations);
+
+            if (!versionsToRollback.isEmpty()) {
+                clearDatabase(connection);
+                ensureMigrationTableExists();
+
+                List<File> migrationFiles = MigrationFileReader.findMigrationFiles(PATH_TO_MIGRATION_FOLDER);
+                for (File file : migrationFiles) {
+                    String version = MigrationFileReader.getVersionFromFile(file);
+                    if (!versionsToRollback.contains(version) && isMigrationAlreadyApplied(file, connection)) {
+                        executeMigration(connection, file);
+                    }
+                }
+                markMigrationsAsReverted(connection, versionsToRollback);
+            }
+
+            connection.commit();
+            log.info("Откат последних {} миграций выполнен.", numberOfMigrations);
+        } catch (Exception e) {
+            log.error("Ошибка при выполнении отката последних миграций.", e);
+        }
+    }
+
+    /**
+     * Откатывает миграции до определенной версии (тега).
+     * Все миграции, примененные после указанного тега, будут откатаны.
+     *
+     * @param tag Тег, до которого нужно откатить миграции.
+     */
+    public static void rollbackToTag(String tag) {
         try (Connection connection = ConnectionManager.getConnection()) {
             connection.setAutoCommit(false);
 
@@ -66,219 +107,146 @@ public class MigrationManager {
 
             ensureMigrationTableExists();
 
-            applyMigrationsUpToTag(tag);
+            List<File> migrationFiles = MigrationFileReader.findMigrationFiles(PATH_TO_MIGRATION_FOLDER);
+            for (File file : migrationFiles) {
+                if (shouldApplyMigration(tag, file)) {
+                    executeMigration(connection, file);
+                } else {
+                    log.info("Достигнута указанная версия {}. Остановка выполнения миграций.", tag);
+                    break;
+                }
+            }
 
             markMigrationsAsRevertedAfterTag(connection, tag);
-
             connection.commit();
-            System.out.println("Откат до тега " + tag + " успешно выполнен.");
-
-        } catch (SQLException e) {
-            System.out.println("Ошибка при откате до тега: " + e.getMessage());
-            e.printStackTrace();
+            log.info("Откат до указанной версии -- {} -- выполнен.", tag);
+        } catch (Exception e) {
+            log.error("Ошибка при выполнении отката до версии.", e);
         }
     }
 
-    public static void rollbackToDate(LocalDateTime date) {
-        try (Connection connection = ConnectionManager.getConnection()) {
-            connection.setAutoCommit(false);
-
-            clearDatabase(connection);
-
-            ensureMigrationTableExists();
-
-            applyMigrationsUpToDate(date);
-
-            connection.commit();
-            System.out.println("Откат до даты " + date + " успешно выполнен.");
-
-        } catch (SQLException e) {
-            System.out.println("Ошибка при откате до тега: " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
-
-    public static void rollback(Double number_of_migrations) {
-        try (Connection connection = ConnectionManager.getConnection()) {
-            connection.setAutoCommit(false);
-
-            clearDatabase(connection);
-
-            ensureMigrationTableExists();
-
-            applyMigrationsUpToChosenNumber(number_of_migrations);
-
-            connection.commit();
-            System.out.println("Откат до " + number_of_migrations + " миграций успешно выполнен.");
-
-        } catch (SQLException e) {
-            System.out.println("Ошибка при откате до заданного числа миграций: " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
-
+    /**
+     * Выводит информацию о текущем состоянии базы данных, включая текущую версию и список примененных миграций.
+     */
     public static void info() {
-        String sql = "SELECT id, migration_name, executed_at, status, reverted FROM migration_history";
-
-        try (Connection connection = ConnectionManager.getConnection();
-             Statement statement = connection.createStatement();
-             ResultSet resultSet = statement.executeQuery(sql)) {
-
-            System.out.println("Информация о миграциях:");
-            System.out.println("--------------------------------------------------------------------");
-            System.out.printf("%-5s %-30s %-25s %-10s %-10s%n", "ID", "Migration Name", "Executed At", "Status", "Reverted");
-            System.out.println("--------------------------------------------------------------------");
-
-            while (resultSet.next()) {
-                int id = resultSet.getInt("id");
-                String migrationName = resultSet.getString("migration_name");
-                Timestamp executedAt = resultSet.getTimestamp("executed_at");
-                String status = resultSet.getString("status");
-                boolean reverted = resultSet.getBoolean("reverted");
-
-                System.out.printf("%-5d %-30s %-25s %-10s %-10s%n",
-                        id, migrationName, executedAt.toLocalDateTime(), status, reverted ? "Yes" : "No");
-            }
-
+        try (Connection connection = ConnectionManager.getConnection()) {
+            logCurrentVersion(connection);
+            logAppliedMigrations(connection);
         } catch (SQLException e) {
-            System.err.println("Ошибка при получении информации о миграциях: " + e.getMessage());
-            e.printStackTrace();
+            log.error("Ошибка при получении статуса базы данных.", e);
         }
     }
 
-
-    private static void applyMigrationsUpToChosenNumber(Double number_of_migrations) {
-        List<File> migrationFiles = MigrationFileReader.findMigrationFiles(PATH_TO_MIGRATION_FOLDER);
-
-        if (number_of_migrations == null || number_of_migrations <= 0 || number_of_migrations != Math.floor(number_of_migrations)) {
-            throw new IllegalArgumentException("Некорректное число миграций: " + number_of_migrations);
+    private static void executeMigration(Connection connection, File file) throws SQLException {
+        String sql = MigrationFileReader.readSqlFromFile(file);
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.executeUpdate();
         }
 
-        int migrationsToApply = number_of_migrations.intValue();
-
-        migrationFiles.sort(Comparator.comparing(File::getName));
-
-        int appliedMigrations = 0;
-        for (File migrationFile : migrationFiles) {
-            if (appliedMigrations >= migrationsToApply) {
-                break;
-            }
-
-            String sql = MigrationFileReader.readSqlFromFile(migrationFile);
-            try {
-                recordMigration(migrationFile.getName(), MigrationStatus.IN_PROGRESS);
-
-                MigrationExecutor.execute(sql);
-
-                updateMigrationStatus(migrationFile.getName(), MigrationStatus.SUCCESS);
-            } catch (SQLException e) {
-                updateMigrationStatus(migrationFile.getName(), MigrationStatus.FAILED);
-                System.out.println("Ошибка при выполнении миграции: " + migrationFile.getName());
-                e.printStackTrace();
-                throw new RuntimeException(e);
-            }
-
-            appliedMigrations++;
-
-        }
-
-        System.out.println("Применено миграций: " + appliedMigrations + " из " + migrationsToApply);
-    }
-
-
-    private static void applyMigrationsUpToDate(LocalDateTime date) {
-        List<File> migrationFiles;
-
-        migrationFiles = MigrationFileReader.findMigrationFiles(PATH_TO_MIGRATION_FOLDER);
-
-        for (File migrationFile : migrationFiles) {
-            LocalDateTime migrationDate = getDateFromFile(migrationFile);
-
-            if (migrationDate.isAfter(date)) {
-                System.out.println("Достигнута указанная дата " + migrationDate + ". Прекращаем выполнение миграций.");
-                break;
-            }
-
-            String sql = MigrationFileReader.readSqlFromFile(migrationFile);
-            try {
-                recordMigration(migrationFile.getName(), MigrationStatus.IN_PROGRESS);
-
-                MigrationExecutor.execute(sql);
-
-                updateMigrationStatus(migrationFile.getName(), MigrationStatus.SUCCESS);
-            } catch (SQLException e) {
-                updateMigrationStatus(migrationFile.getName(), MigrationStatus.FAILED);
-                System.out.println("Ошибка при выполнении миграции: " + migrationFile.getName());
-                e.printStackTrace();
-                throw new RuntimeException(e);
-            }
+        String newMigration = """
+                INSERT INTO migration_history (version, description, status, reverted, applied_at)
+                VALUES (?, ?, ?, FALSE, CURRENT_TIMESTAMP)
+                ON CONFLICT (version) DO UPDATE SET
+                    description = EXCLUDED.description,
+                    status = EXCLUDED.status,
+                    reverted = FALSE,
+                    applied_at = CASE WHEN migration_history.reverted = TRUE THEN CURRENT_TIMESTAMP ELSE migration_history.applied_at END;
+            """;
+        try (PreparedStatement statement = connection.prepareStatement(newMigration)) {
+            statement.setString(1, MigrationFileReader.getVersionFromFile(file));
+            statement.setString(2, "Migration " + file.getName());
+            statement.setBoolean(3, true);
+            statement.executeUpdate();
         }
     }
 
-    private static LocalDateTime getDateFromFile(File migrationFile) {
-        String migrationName = migrationFile.getName();
-        String sql = "SELECT executed_at FROM migration_history WHERE migration_name = ?";
+    private static boolean isMigrationAlreadyApplied(File migrationFile, Connection connection) throws SQLException {
+        String migrationVersion = MigrationFileReader.getVersionFromFile(migrationFile);
+        String query = "SELECT COUNT(*) FROM migration_history WHERE version = ? AND reverted = FALSE";
+        try (PreparedStatement statement = connection.prepareStatement(query)) {
+            statement.setString(1, migrationVersion);
+            ResultSet rs = statement.executeQuery();
+            rs.next();
+            return rs.getInt(1) > 0;
+        }
+    }
 
+    private static void executeQueryAndLogResults(String query, String logMessage) {
         try (Connection connection = ConnectionManager.getConnection();
-             PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
+             PreparedStatement statement = connection.prepareStatement(query)) {
 
-            preparedStatement.setString(1, migrationName);
-            ResultSet resultSet = preparedStatement.executeQuery();
-
+            ResultSet resultSet = statement.executeQuery();
             if (resultSet.next()) {
-                Timestamp timestamp = resultSet.getTimestamp("executed_at");
-                return timestamp.toLocalDateTime();
+                String version = resultSet.getString("version");
+                String description = resultSet.getString("description");
+                String appliedAt = resultSet.getTimestamp("applied_at").toString();
+                boolean reverted = resultSet.getBoolean("reverted");
+                String status = resultSet.getString("status");
+
+                log.info("{} - Версия: {}, Описание: {}, Дата применения: {}, Откатана: {}, Статус: {}",
+                        logMessage, version, description, appliedAt, reverted ? "Да" : "Нет", status);
             } else {
-                throw new RuntimeException("Дата для миграции " + migrationName + " не найдена в таблице migration_history.");
+                log.info("Миграции еще не применялись.");
             }
         } catch (SQLException e) {
-            throw new RuntimeException("Ошибка при чтении данных из таблицы migration_history для файла " + migrationName, e);
+            log.error("Ошибка при выполнении запроса к базе данных: {}", e.getMessage());
         }
     }
 
+    private static void logCurrentVersion(Connection connection) throws SQLException {
+        String query = "SELECT version FROM migration_history WHERE reverted = FALSE ORDER BY applied_at DESC LIMIT 1";
+        executeQueryAndLogResults(query, "Актуальная версия базы данных");
+    }
 
-    private static void applyMigrationsUpToTag(String tag) {
-        List<File> migrationFiles = MigrationFileReader.findMigrationFiles(PATH_TO_MIGRATION_FOLDER);
+    private static void logAppliedMigrations(Connection connection) throws SQLException {
+        String query = "SELECT version, description, applied_at, reverted FROM migration_history WHERE reverted = FALSE ORDER BY applied_at";
+        try (PreparedStatement ps = connection.prepareStatement(query);
+             ResultSet rs = ps.executeQuery()) {
 
-        for (File migrationFile : migrationFiles) {
-            double version = MigrationFileReader.getVersionFromFile(migrationFile);
+            log.info("Список примененных миграций:");
+            log.info(String.format("| %-20s | %-50s | %-20s | %-10s |", "Версия", "Описание", "Дата применения", "Откатана"));
+            log.info("|" + "-".repeat(83) + "|");
 
-            if (version > Double.parseDouble(tag)) {
-                System.out.println("Достигнут указанный тег " + tag + ". Прекращаем выполнение миграций.");
-                break;
+            while (rs.next()) {
+                String version = rs.getString("version");
+                String description = rs.getString("description");
+                String appliedAt = rs.getTimestamp("applied_at").toString();
+                boolean reverted = rs.getBoolean("reverted");
+
+                log.info(String.format("| %-20s | %-50s | %-20s | %-10s |", version, description, appliedAt, reverted ? "Да" : "Нет"));
             }
 
-            String migrationName = migrationFile.getName();
-
-            if (isMigrationAlreadyApplied(migrationName)) {
-                System.out.println("Миграция " + migrationName + " уже выполнена. Пропускаем.");
-                continue;
-            }
-
-            String sql = MigrationFileReader.readSqlFromFile(migrationFile);
-            try {
-                recordMigration(migrationName, MigrationStatus.IN_PROGRESS);
-
-                MigrationExecutor.execute(sql);
-
-                updateMigrationStatus(migrationName, MigrationStatus.SUCCESS);
-            } catch (SQLException e) {
-                updateMigrationStatus(migrationName, MigrationStatus.FAILED);
-                System.out.println("Ошибка при выполнении миграции: " + migrationName);
-                e.printStackTrace();
-                throw new RuntimeException(e);
-            }
+            log.info("|" + "-".repeat(83) + "|");
         }
     }
 
+    private static List<String> getVersionsToRollback(Connection connection, int numberOfMigrations) throws SQLException {
+        List<String> versionsToRollback = new ArrayList<>();
+        String query = "SELECT version FROM migration_history WHERE reverted = FALSE ORDER BY version DESC LIMIT ?";
+        try (PreparedStatement statement = connection.prepareStatement(query)) {
+            statement.setInt(1, numberOfMigrations);
+            try (ResultSet rs = statement.executeQuery()) {
+                while (rs.next()) {
+                    versionsToRollback.add(rs.getString("version"));
+                }
+            }
+        }
+        return versionsToRollback;
+    }
 
+    private static boolean shouldApplyMigration(String tag, File file) {
+        return MigrationFileReader.getVersionFromFile(file).compareTo(tag) <= 0;
+    }
 
-    private static void markMigrationsAsRevertedAfterTag(Connection connection, String tag) throws SQLException {
-        String query = "UPDATE migration_history SET reverted = TRUE WHERE CAST(SUBSTRING(migration_name FROM 'V([0-9]+(\\.[0-9]+)?)') AS NUMERIC) > ? AND reverted = FALSE";
-        try (PreparedStatement ps = connection.prepareStatement(query)) {
-            ps.setString(1, tag);
-            ps.executeUpdate();
-            System.out.println("Миграции после тега " + tag + " помечены как откатанные.");
+    private static void ensureMigrationTableExists() {
+        String query = "CREATE TABLE IF NOT EXISTS migration_history (" +
+                "id SERIAL PRIMARY KEY, version VARCHAR(255) NOT NULL UNIQUE, description VARCHAR(255), " +
+                "status BOOLEAN DEFAULT FALSE, reverted BOOLEAN DEFAULT FALSE, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)";
+        try (Connection connection = ConnectionManager.getConnection();
+             Statement statement = connection.createStatement()) {
+            statement.execute(query);
+        } catch (SQLException e) {
+            throw new RuntimeException("Ошибка при проверке или создании таблицы migration_history", e);
         }
     }
 
@@ -287,94 +255,30 @@ public class MigrationManager {
         DO $$ DECLARE
             r RECORD;
         BEGIN
-            FOR r IN (SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name <> 'migration_history') LOOP
-                EXECUTE 'TRUNCATE TABLE public.' || r.table_name || ' RESTART IDENTITY CASCADE';
+            FOR r IN (SELECT table_name FROM information_schema.tables WHERE table_schema = 'public') LOOP
+                EXECUTE 'TRUNCATE TABLE ' || r.table_name || ' CASCADE';
             END LOOP;
         END $$;
-    """;
-        try (Statement stmt = connection.createStatement()) {
-            stmt.execute(query);
-            System.out.println("Все данные очищены, кроме migration_history.");
+        """;
+        try (Statement statement = connection.createStatement()) {
+            statement.execute(query);
         }
     }
 
-    private static void ensureMigrationTableExists() {
-        String createTableQuery = """
-    CREATE TABLE IF NOT EXISTS migration_history (
-        id SERIAL PRIMARY KEY,
-        migration_name VARCHAR(255) NOT NULL UNIQUE,
-        executed_at TIMESTAMP NOT NULL,
-        status VARCHAR(50) NOT NULL,
-        reverted BOOLEAN DEFAULT FALSE
-    )
-    """;
-
-        try (Connection connection = ConnectionManager.getConnection();
-             Statement statement = connection.createStatement()) {
-
-            statement.execute(createTableQuery);
-        } catch (SQLException e) {
-            throw new RuntimeException("Ошибка при проверке или создании таблицы migration_history", e);
-        }
-    }
-
-
-    private static double getCurrentVersion() throws SQLException {
-        String query = "SELECT MAX(CAST(SUBSTRING(migration_name FROM 'V([0-9]+(\\.[0-9]+)?)') AS NUMERIC)) FROM migration_history";
-
-        try (Connection connection = ConnectionManager.getConnection();
-             Statement statement = connection.createStatement();
-             ResultSet resultSet = statement.executeQuery(query)) {
-
-            if (resultSet.next()) {
-                return resultSet.getDouble(1);
-            } else {
-                return 0.0;
-            }
-        }
-    }
-
-    private static void recordMigration(String migrationName, MigrationStatus status) {
-        String query = "INSERT INTO migration_history (migration_name, executed_at, status) VALUES (?, CURRENT_TIMESTAMP, ?)";
-        try (Connection connection = ConnectionManager.getConnection();
-             PreparedStatement statement = connection.prepareStatement(query)) {
-
-            statement.setString(1, migrationName);
-            statement.setString(2, status.name());
+    private static void markMigrationsAsRevertedAfterTag(Connection connection, String tag) throws SQLException {
+        String query = "UPDATE migration_history SET reverted = TRUE WHERE version > ?";
+        try (PreparedStatement statement = connection.prepareStatement(query)) {
+            statement.setString(1, tag);
             statement.executeUpdate();
-        } catch (SQLException e) {
-            throw new RuntimeException("Ошибка при записи миграции: " + migrationName, e);
         }
     }
 
-    private static void updateMigrationStatus(String migrationName,  MigrationStatus status) {
-        String query = "UPDATE migration_history SET status = ? WHERE migration_name = ?";
-        try (Connection connection = ConnectionManager.getConnection();
-             PreparedStatement statement = connection.prepareStatement(query)) {
-
-            statement.setString(1, status.name());
-            statement.setString(2, migrationName);
+    private static void markMigrationsAsReverted(Connection connection, List<String> versions) throws SQLException {
+        String query = "UPDATE migration_history SET reverted = TRUE WHERE version IN (?)";
+        try (PreparedStatement statement = connection.prepareStatement(query)) {
+            statement.setString(1, String.join(",", versions));
             statement.executeUpdate();
-        } catch (SQLException e) {
-            throw new RuntimeException("Ошибка при обновлении статуса миграции: " + migrationName, e);
         }
-    }
-
-    private static boolean isMigrationAlreadyApplied(String migrationName) {
-        String query = "SELECT COUNT(*) FROM migration_history WHERE migration_name = ? AND reverted = FALSE";
-        try (Connection connection = ConnectionManager.getConnection();
-             PreparedStatement ps = connection.prepareStatement(query)) {
-            ps.setString(1, migrationName);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    return rs.getInt(1) > 0;
-                }
-            }
-        } catch (SQLException e) {
-            System.out.println("Ошибка при проверке миграции: " + e.getMessage());
-            e.printStackTrace();
-        }
-        return false;
     }
 
 }

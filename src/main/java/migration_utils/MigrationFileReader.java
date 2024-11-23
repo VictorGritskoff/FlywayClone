@@ -1,56 +1,87 @@
 package migration_utils;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
+import lombok.extern.slf4j.Slf4j;
+
+import java.io.*;
+import java.net.URISyntaxException;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
+
+/**
+ * Класс, реализующий методы для работы с миграционными файлами:
+ * <ul>
+ *     <li>Поиск миграционных файлов с заданным форматом имени.</li>
+ *     <li>Извлечение версии миграции из имени файла.</li>
+ *     <li>Чтение SQL-скрипта из миграционного файла.</li>
+ * </ul>
+ * <p>
+ * Все миграционные файлы должны быть в формате "V<номер версии>__<описание>.sql", где:
+ * <ul>
+ *     <li><b><номер версии></b> — целое число, которое обозначает уникальный номер миграции,</li>
+ *     <li><b><описание></b> — произвольное описание миграции.</li>
+ * </ul>
+ * </p>
+ */
 
 public class MigrationFileReader {
 
-    public static List<File> findMigrationFiles(String migrationsPath) {
-        List<File> migrationFiles = new ArrayList<>();
+    /**
+     * Находит и возвращает список файлов миграций в указанной директории.
+     * Файлы должны соответствовать формату "V<номер версии>__<описание>.sql".
+     *
+     * @param "directoryPath" Путь к директории, содержащей файлы миграций.
+     * @return Список файлов миграций, отсортированных по версии.
+     * @throws IllegalArgumentException Если директория не существует или не является папкой,
+     *                                   или если произошла ошибка при доступе к ресурсам.
+     */
 
+    public static List<File> findMigrationFiles(String directoryPath) {
         try {
-            File migrationsDirectory = new File(migrationsPath);
+            ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+            URL resourceUrl = classLoader.getResource(directoryPath);
 
-            if (!migrationsDirectory.exists() || !migrationsDirectory.isDirectory()) {
-                System.err.println("Ошибка: путь не существует или не является директорией: " + migrationsPath);
-                return migrationFiles;
+            if (resourceUrl == null) {
+                throw new IllegalArgumentException("Ресурс не найден: " + directoryPath);
             }
 
-            File[] files = migrationsDirectory.listFiles((dir, name) -> name.endsWith(".sql"));
+            File directory = new File(resourceUrl.toURI());
 
-            if (files != null) {
-                Collections.addAll(migrationFiles, files);
+            if (!directory.exists() || !directory.isDirectory()) {
+                throw new IllegalArgumentException("Каталог миграций не найден: " + directoryPath);
             }
 
-            migrationFiles.sort((f1, f2) -> {
-                try {
-                    String version1 = f1.getName().split("__")[0].substring(1);
-                    String version2 = f2.getName().split("__")[0].substring(1);
-                    return Double.compare(Double.parseDouble(version1), Double.parseDouble(version2));
-                } catch (Exception e) {
-                    System.err.println("Ошибка при сортировке файлов миграции: " + e.getMessage());
-                    e.printStackTrace();
-                    return 0;
-                }
-            });
-        } catch (Exception e) {
-            System.err.println("Ошибка при поиске файлов миграции: " + e.getMessage());
-            e.printStackTrace();
+            return Arrays.stream(Objects.requireNonNull(directory.listFiles()))
+                    .filter(file -> file.getName().matches("V\\d+__.*\\.sql"))
+                    .sorted(Comparator.comparing(MigrationFileReader::getVersionFromFile))
+                    .toList();
+        } catch (URISyntaxException | NullPointerException e) {
+            throw new IllegalArgumentException("Ошибка при доступе к директории миграций: " + directoryPath, e);
         }
-
-        return migrationFiles;
     }
 
-    public static double getVersionFromFile(File migrationFile) {
-        String fileName = migrationFile.getName();
-        String versionString = fileName.split("__")[0].substring(1);
-        return Double.parseDouble(versionString);
+
+    /**
+     * Извлекает версию миграции из имени файла.
+     * Формат имени файла должен быть "V<номер версии>__<описание>.sql".
+     *
+     * @param migrationFile Файл миграции.
+     * @return Номер версии миграции (число).
+     */
+
+    public static String getVersionFromFile(File migrationFile) {
+        return migrationFile.getName().split("__")[0].substring(1);
     }
+
+    /**
+     * Читает SQL-скрипт из файла миграции и возвращает его в виде строки.
+     *
+     * @param migrationFile Файл миграции.
+     * @return Строка с SQL-скриптом.
+     */
 
     public static String readSqlFromFile(File migrationFile) {
         StringBuilder sqlBuilder = new StringBuilder();

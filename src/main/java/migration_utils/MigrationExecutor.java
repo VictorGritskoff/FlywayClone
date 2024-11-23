@@ -1,59 +1,53 @@
 package migration_utils;
 
-import database.ConnectionManager;
 
+import java.io.File;
 import java.sql.*;
-import java.util.concurrent.TimeUnit;
+
+/**
+ * Класс для выполнения миграций в базе данных.
+ * Содержит метод для выполнения SQL-запросов из файла и записи информации о выполненной миграции в таблицу {@code migration_history}.
+ */
 
 public class MigrationExecutor {
 
-    private static final int MAX_RETRIES = 3;
+    /**
+     * Выполняет миграцию:
+     * 1. Выполняет SQL-запрос из файла миграции.
+     * 2. Добавляет запись о выполненной миграции в таблицу {@code migration_history}.
+     * <p>
+     * Этот метод использует два запроса:
+     * <ol>
+     *   <li>Первый выполняет SQL-запрос из файла миграции, который может изменять структуру базы данных.</li>
+     *   <li>Второй записывает информацию о выполненной миграции в таблицу {@code migration_history}, обновляя описание и статус миграции, если она уже существует.</li>
+     * </ol>
+     *
+     * @param connection Соединение с базой данных, используемое для выполнения SQL-запросов.
+     * @param file Файл миграции, содержащий SQL-запрос для выполнения.
+     * @throws SQLException Если возникает ошибка при выполнении SQL-запросов.
+     */
 
-    MigrationExecutor(){
-    }
+    public static void execute(Connection connection, File file) throws SQLException {
+        String sql = MigrationFileReader.readSqlFromFile(file);
 
-    public static void execute(String sql) throws SQLException {
-        int attempts = 0;
-        while (attempts < MAX_RETRIES) {
-            try (Connection connection = ConnectionManager.getConnection()) {
-                connection.setAutoCommit(false);
-
-                try (Statement statement = connection.createStatement()) {
-                    statement.executeUpdate(sql);
-                    connection.commit();
-                    return;
-                } catch (SQLTransientConnectionException e) {
-                    attempts++;
-                    System.out.println("Ошибка подключения к базе данных. Попытка №" + attempts);
-                    if (attempts < MAX_RETRIES) {
-                        waitBeforeRetry(attempts);
-                    } else {
-                        System.out.println("Превышено максимальное количество попыток подключения. Остановка.");
-                        throw new SQLException("Ошибка при подключении к базе данных", e);
-                    }
-                } catch (SQLNonTransientConnectionException e) {
-                    System.out.println("Ошибка подключения к базе данных. Не удается восстановить соединение.");
-                    throw new SQLException("Невозможно восстановить соединение с базой данных", e);
-                } catch (SQLException e) {
-                    connection.rollback();
-                    System.out.println("Ошибка при выполнении миграции. Транзакция откатана.");
-                    throw new RuntimeException("Ошибка миграции, изменения откатаны", e);
-                }
-            } catch (SQLException e) {
-                System.out.println("Ошибка при подключении к базе данных: " + e.getMessage());
-                throw new SQLException("Ошибка при подключении к базе данных", e);
-            }
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.executeUpdate();
         }
-    }
 
-    private static void waitBeforeRetry(int attempt) {
-        try {
-            long waitTime = (long) Math.pow(2, attempt) * 1000;
-            System.out.println("Задержка перед повторной попыткой: " + waitTime / 1000 + " секунд.");
-            TimeUnit.MILLISECONDS.sleep(waitTime);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            System.out.println("Ошибка при ожидании между попытками: " + e.getMessage());
+        String newMigration = """
+                    INSERT INTO migration_history (version, description, status, reverted, applied_at)
+                    VALUES (?, ?, ?, FALSE, CURRENT_TIMESTAMP)
+                    ON CONFLICT (version) DO UPDATE SET
+                        description = EXCLUDED.description,
+                        status = EXCLUDED.status,
+                        reverted = FALSE,
+                        applied_at = CASE WHEN migration_history.reverted = TRUE THEN CURRENT_TIMESTAMP ELSE migration_history.applied_at END;
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(newMigration)) {
+            statement.setString(1, MigrationFileReader.getVersionFromFile(file));
+            statement.setString(2, "Migration " + file.getName());
+            statement.setBoolean(3, true);
+            statement.executeUpdate();
         }
     }
 }
