@@ -1,0 +1,4 @@
+id,version,description,status,reverted,applied_at
+13,1,Migration V1__insert_data_into_every_table.sql,true,false,2024-11-24 13:22:45.666209
+14,2,Migration V2__delete_data_from_all_tables.sql,true,false,2024-11-24 13:22:45.666209
+15,3,Migration V3__insert_data_into_genres.sql,true,false,2024-11-24 13:22:45.666209

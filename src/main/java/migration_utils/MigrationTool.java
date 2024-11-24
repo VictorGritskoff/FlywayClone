@@ -3,6 +3,9 @@ package migration_utils;
 import lombok.extern.slf4j.Slf4j;
 import java.util.Scanner;
 
+import static report.MakeReport.exportCsv;
+import static report.MakeReport.exportJson;
+
 /**
  * Утилита для работы с миграциями базы данных.
  * <p>
@@ -103,6 +106,26 @@ public class MigrationTool {
                     MigrationManager.info();
                     break;
 
+                case "exportCsv":
+                    if (args.length < 2) {
+                        log.error("Ошибка: Не указано имя файла. Используйте формат: exportCsv FILE");
+                        printHelp();
+                    } else {
+                        String fileName = args[1];
+                        exportCsv(fileName);
+                    }
+                    break;
+
+                case "exportJson":
+                    if (args.length < 2) {
+                        log.error("Ошибка: Не указано имя файла. Используйте формат: exportJson FILE");
+                        printHelp();
+                    } else {
+                        String fileName = args[1];
+                        exportJson(fileName);
+                    }
+                    break;
+
                 case "help":
                     printHelp();
                     break;
@@ -124,6 +147,8 @@ public class MigrationTool {
         System.out.println("  lastMigration        - Показать последнюю примененную миграцию.");
         System.out.println("  rollbackToTag TAG    - Откатить миграции до указанного тега.");
         System.out.println("  info                 - Показать информацию о выполненных миграциях.");
+        System.out.println("  exportCsv FILE       - Экспортировать данные в CSV файл.");
+        System.out.println("  exportJson FILE       - Экспортировать данные в JSON файл.");
         System.out.println("  help                 - Показать это сообщение.");
         System.out.println("  exit                 - Завершить работу.");
     }

@@ -1,0 +1,5 @@
+[
+  {"id": 13, "version": "1", "description": "Migration V1__insert_data_into_every_table.sql", "status": true, "reverted": false, "applied_at": "2024-11-24 13:22:45.666209"},
+  {"id": 14, "version": "2", "description": "Migration V2__delete_data_from_all_tables.sql", "status": true, "reverted": false, "applied_at": "2024-11-24 13:22:45.666209"},
+  {"id": 15, "version": "3", "description": "Migration V3__insert_data_into_genres.sql", "status": true, "reverted": false, "applied_at": "2024-11-24 13:22:45.666209"}
+]
