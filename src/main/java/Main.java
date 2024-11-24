@@ -1,4 +1,3 @@
-import lombok.extern.slf4j.Slf4j;
 
 import static migration_utils.MigrationTool.run;
 

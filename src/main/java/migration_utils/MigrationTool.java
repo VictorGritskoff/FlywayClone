@@ -71,7 +71,7 @@ public class MigrationTool {
 
                 case "rollback":
                     if (args.length < 2) {
-                        log.error("Ошибка: Не указано количество миграций. Используйте формат: rollback N");
+                        log.error("Ошибка: Не указано количество миграций. Используйте формат: rollback <N>");
                         printHelp();
                     } else {
                         try {
@@ -92,7 +92,7 @@ public class MigrationTool {
 
                 case "rollbackToTag":
                     if (args.length < 2) {
-                        log.error("Ошибка: Не указан тег. Используйте формат: rollbackToTag TAG");
+                        log.error("Ошибка: Не указан тег. Используйте формат: rollbackToTag <TAG>");
                         printHelp();
                     } else {
                         String tag = args[1];
@@ -108,7 +108,7 @@ public class MigrationTool {
 
                 case "exportCsv":
                     if (args.length < 2) {
-                        log.error("Ошибка: Не указано имя файла. Используйте формат: exportCsv FILE");
+                        log.error("Ошибка: Не указано имя файла. Используйте формат: exportCsv <FILE_NAME>");
                         printHelp();
                     } else {
                         String fileName = args[1];
@@ -118,7 +118,7 @@ public class MigrationTool {
 
                 case "exportJson":
                     if (args.length < 2) {
-                        log.error("Ошибка: Не указано имя файла. Используйте формат: exportJson FILE");
+                        log.error("Ошибка: Не указано имя файла. Используйте формат: exportJson <FILE_NAME>");
                         printHelp();
                     } else {
                         String fileName = args[1];
@@ -142,13 +142,13 @@ public class MigrationTool {
 
     private static void printHelp() {
         System.out.println("Доступные команды:");
-        System.out.println("  migrate               - Применить все миграции.");
-        System.out.println("  rollback N           - Откатить N последних миграций.");
+        System.out.println("  migrate              - Применить все миграции.");
+        System.out.println("  rollback <N>         - Откатить N последних миграций.");
         System.out.println("  lastMigration        - Показать последнюю примененную миграцию.");
-        System.out.println("  rollbackToTag TAG    - Откатить миграции до указанного тега.");
+        System.out.println("  rollbackToTag <TAG>  - Откатить миграции до указанного тега.");
         System.out.println("  info                 - Показать информацию о выполненных миграциях.");
-        System.out.println("  exportCsv FILE       - Экспортировать данные в CSV файл.");
-        System.out.println("  exportJson FILE       - Экспортировать данные в JSON файл.");
+        System.out.println("  exportCsv <FILE_NAME>     - Экспортировать данные в CSV файл.");
+        System.out.println("  exportJson <FILE_NAME>    - Экспортировать данные в JSON файл.");
         System.out.println("  help                 - Показать это сообщение.");
         System.out.println("  exit                 - Завершить работу.");
     }

@@ -2,11 +2,13 @@ package migration_utils;
 
 import database.ConnectionManager;
 import lombok.extern.slf4j.Slf4j;
+import utils.PropertiesUtils;
 
 import java.io.File;
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Properties;
 
 import static migration_utils.MigrationExecutor.execute;
 
@@ -28,7 +30,85 @@ public class MigrationManager {
     /**
      * Путь к директории, содержащей миграционные файлы.
      */
-    private static final String PATH_TO_MIGRATION_FOLDER = "migrations";
+    private static final String PATH_TO_MIGRATION_FOLDER =
+            PropertiesUtils.getProperty("path.to.migration.folder", "migrations");
+
+    static {
+        log.info("Путь к папке миграций: {}", PATH_TO_MIGRATION_FOLDER);
+    }
+
+    private static final String SELECT_LAST_MIGRATION = """
+        SELECT * FROM migration_history 
+        WHERE reverted = FALSE 
+        ORDER BY applied_at DESC 
+        LIMIT 1
+    """;
+
+    private static final String SELECT_CURRENT_VERSION = """
+        SELECT version FROM migration_history
+        WHERE reverted = FALSE
+        ORDER BY version DESC LIMIT 1
+    """;
+
+    private static final String SELECT_ALL_MIGRATIONS = """
+        SELECT version, description, applied_at, reverted 
+        FROM migration_history 
+        WHERE reverted = FALSE 
+        ORDER BY applied_at
+    """;
+
+    private static final String CLEAR_DATABASE = """
+        DO $$ DECLARE
+            r RECORD;
+        BEGIN
+            FOR r IN (
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name <> 'migration_history'
+            ) LOOP
+                EXECUTE 'TRUNCATE TABLE public.' || r.table_name || ' RESTART IDENTITY CASCADE';
+            END LOOP;
+        END $$;
+    """;
+
+    private static final String CREATE_MIGRATION_TABLE = """
+        CREATE TABLE IF NOT EXISTS migration_history (
+            id SERIAL PRIMARY KEY,
+            version VARCHAR(255) NOT NULL UNIQUE,
+            description VARCHAR(255),
+            status BOOLEAN DEFAULT FALSE,
+            reverted BOOLEAN DEFAULT FALSE,
+            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """;
+
+    private static final String SELECT_MIGRATIONS_FOR_ROLLBACK = """
+        SELECT id, version 
+        FROM migration_history 
+        WHERE reverted = FALSE 
+        ORDER BY version DESC 
+        LIMIT ?;
+    """;
+
+    private static final String UPDATE_MIGRATION_REVERTED = """
+        UPDATE migration_history 
+        SET reverted = TRUE 
+        WHERE version = ?;
+    """;
+
+    private static final String UPDATE_MIGRATIONS_AFTER_TAG = """
+        UPDATE migration_history 
+        SET reverted = TRUE 
+        WHERE version > ?;
+    """;
+
+    private static final String CHECK_MIGRATION_ALREADY_APPLIED = """
+        SELECT COUNT(*) 
+        FROM migration_history 
+        WHERE version = ? 
+        AND reverted = FALSE;
+    """;
 
     /**
      * Выполняет миграции, которые еще не были применены.
@@ -61,10 +141,8 @@ public class MigrationManager {
      * Запрашивает из базы данных последнюю миграцию, которая была применена, и выводит её данные.
      */
     public static void getLastAppliedMigration() {
-        String query = "SELECT * FROM migration_history WHERE reverted = FALSE ORDER BY applied_at DESC LIMIT 1";
-
         try (Connection connection = ConnectionManager.getConnection()) {
-            try (PreparedStatement statement = connection.prepareStatement(query)) {
+            try (PreparedStatement statement = connection.prepareStatement(SELECT_LAST_MIGRATION)) {
                 ResultSet resultSet = statement.executeQuery();
 
                 if (resultSet.next()) {
@@ -97,14 +175,7 @@ public class MigrationManager {
         try (Connection connection = ConnectionManager.getConnection()) {
             connection.setAutoCommit(false);
 
-            String selectQuery = """
-                        SELECT id, version
-                        FROM migration_history
-                        WHERE reverted = FALSE
-                        ORDER BY version DESC
-                        LIMIT ?;
-                    """;
-            try (PreparedStatement statement = connection.prepareStatement(selectQuery)) {
+            try (PreparedStatement statement = connection.prepareStatement(SELECT_MIGRATIONS_FOR_ROLLBACK)) {
                 statement.setInt(1, number_of_migrations);
                 try (ResultSet set = statement.executeQuery()) {
                     List<String> versionsToRollback = new ArrayList<>();
@@ -171,12 +242,7 @@ public class MigrationManager {
      */
     public static void info() {
         try (Connection connection = ConnectionManager.getConnection()) {
-            String selectCurrentVersionQuery = """
-                    SELECT version FROM migration_history
-                    WHERE reverted = FALSE
-                    ORDER BY version DESC LIMIT 1
-                """;
-            try (PreparedStatement statement = connection.prepareStatement(selectCurrentVersionQuery)) {
+            try (PreparedStatement statement = connection.prepareStatement(SELECT_CURRENT_VERSION)) {
                 ResultSet set = statement.executeQuery();
                 if (set.next()) {
                     String currentVersion = set.getString("version");
@@ -186,12 +252,7 @@ public class MigrationManager {
                 }
             }
 
-            String allMigrationsQuery = """
-                    SELECT version, description, applied_at, reverted FROM migration_history
-                    WHERE reverted = FALSE
-                    ORDER BY applied_at
-                """;
-            try (PreparedStatement ps = connection.prepareStatement(allMigrationsQuery)) {
+            try (PreparedStatement ps = connection.prepareStatement(SELECT_ALL_MIGRATIONS)) {
                 ResultSet rs = ps.executeQuery();
 
                 log.info("Список примененных миграций:");
@@ -219,8 +280,7 @@ public class MigrationManager {
     }
 
     private static void markMigrationsAsRevertedAfterTag(Connection connection, String tag) throws SQLException {
-        String updateQuery = "UPDATE migration_history SET reverted = TRUE WHERE version > ?";
-        try (PreparedStatement ps = connection.prepareStatement(updateQuery)) {
+        try (PreparedStatement ps = connection.prepareStatement(UPDATE_MIGRATIONS_AFTER_TAG)) {
             ps.setString(1, tag);
             ps.executeUpdate();
             log.info("Миграции после версии {} помечены как откатанные.", tag);
@@ -228,45 +288,24 @@ public class MigrationManager {
     }
 
     private static void clearDatabase(Connection connection) throws SQLException {
-        String query = """
-        DO $$ DECLARE
-            r RECORD;
-        BEGIN
-            FOR r IN (SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name <> 'migration_history') LOOP
-                EXECUTE 'TRUNCATE TABLE public.' || r.table_name || ' RESTART IDENTITY CASCADE';
-            END LOOP;
-        END $$;
-    """;
         try (Statement stmt = connection.createStatement()) {
-            stmt.execute(query);
+            stmt.execute(CLEAR_DATABASE);
             System.out.println("Все данные очищены, кроме migration_history.");
         }
     }
 
     private static void ensureMigrationTableExists() {
-        String createTableQuery = """
-    CREATE TABLE IF NOT EXISTS migration_history (
-        id SERIAL PRIMARY KEY,
-        version VARCHAR(255) NOT NULL UNIQUE,
-        description VARCHAR(255),
-        status BOOLEAN DEFAULT FALSE,
-        reverted BOOLEAN DEFAULT FALSE,
-        applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    """;
-
         try (Connection connection = ConnectionManager.getConnection();
              Statement statement = connection.createStatement()) {
 
-            statement.execute(createTableQuery);
+            statement.execute(CREATE_MIGRATION_TABLE);
         } catch (SQLException e) {
             throw new RuntimeException("Ошибка при проверке или создании таблицы migration_history", e);
         }
     }
 
     private static void markMigrationsAsReverted(Connection connection, List<String> versions) throws SQLException {
-        String updateQuery = "UPDATE migration_history SET reverted = TRUE WHERE version = ?";
-        try (PreparedStatement ps = connection.prepareStatement(updateQuery)) {
+        try (PreparedStatement ps = connection.prepareStatement(UPDATE_MIGRATION_REVERTED)) {
             for (String version : versions) {
                 ps.setString(1, version);
                 ps.addBatch();
@@ -278,8 +317,7 @@ public class MigrationManager {
 
     private static boolean isMigrationAlreadyApplied(File migrationFile, Connection connection) throws SQLException {
         String migrationVersion = MigrationFileReader.getVersionFromFile(migrationFile);
-        String query = "SELECT COUNT(*) FROM migration_history WHERE version = ? AND reverted = FALSE";
-        try (PreparedStatement statement = connection.prepareStatement(query)) {
+        try (PreparedStatement statement = connection.prepareStatement(CHECK_MIGRATION_ALREADY_APPLIED)) {
             statement.setString(1, migrationVersion);
             ResultSet rs = statement.executeQuery();
             rs.next();

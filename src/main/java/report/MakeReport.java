@@ -8,12 +8,22 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.sql.*;
 
+/**
+ * Класс для генерации отчетов о миграциях базы данных.
+ * Поддерживает экспорт данных о миграциях в форматы CSV и JSON.
+ * В отчете содержатся следующие поля: id, version, description, status, reverted, applied_at.
+ */
 @Slf4j
 public class MakeReport {
 
     private static final String REPORTS_DIRECTORY = "reports";
     private static final String QUERY = "SELECT id, version, description, status, reverted, applied_at FROM migration_history";
 
+    /**
+     * Экспортирует данные о миграциях в формат CSV.
+     *
+     * @param fileName Имя файла для сохранения отчета (с расширением .csv).
+     */
     public static void exportCsv(String fileName) {
         String filePath = prepareFilePath(fileName);
         if (filePath == null) return;
@@ -45,6 +55,11 @@ public class MakeReport {
         }
     }
 
+    /**
+     * Экспортирует данные о миграциях в формат JSON.
+     *
+     * @param fileName Имя файла для сохранения отчета (с расширением .json).
+     */
     public static void exportJson(String fileName) {
         String filePath = prepareFilePath(fileName);
         if (filePath == null) return;
@@ -82,6 +97,13 @@ public class MakeReport {
         }
     }
 
+    /**
+     * Подготавливает путь к файлу для сохранения отчета.
+     * Если директория для отчетов не существует, она будет создана.
+     *
+     * @param fileName Имя файла для отчета.
+     * @return Путь к файлу или null, если не удалось создать директорию.
+     */
     private static String prepareFilePath(String fileName) {
         String reportsDirPath = new File(REPORTS_DIRECTORY).getAbsolutePath();
         File reportsDir = new File(reportsDirPath);
@@ -94,6 +116,12 @@ public class MakeReport {
         return reportsDirPath + File.separator + fileName;
     }
 
+    /**
+     * Выполняет запрос к базе данных для получения истории миграций.
+     *
+     * @return Результат запроса, содержащий историю миграций.
+     * @throws SQLException Если не удалось выполнить запрос к базе данных.
+     */
     private static ResultSet fetchMigrationHistory() throws SQLException {
         Connection connection = DriverManager.getConnection(
                 PropertiesUtils.getProperty("db.url"),
